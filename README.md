@@ -39,8 +39,13 @@ What `install.sh` does:
 ## How it works
 1. **Billing header**: SHA-256 signed `x-anthropic-billing-header` injected as `system[0]`
 2. **System prompt relocation**: Non-identity system entries moved to the first user message as `<system-reminder>` blocks
-3. **Beta flag**: Adds `prompt-caching-scope-2026-01-05`
-4. **Temperature fix**: Strips non-default temperature on Opus 4.6 adaptive thinking, which prevents HTTP 400
+3. **Beta flags**: Adds `prompt-caching-scope-2026-01-05` and `advisor-tool-2026-03-01`
+4. **Stainless SDK spoof**: Lowercase `x-stainless-*` headers + `anthropic-dangerous-direct-browser-access` + `?beta=true` query param matching real Claude Code 2.1.112
+5. **Tool name namespacing**: Hermes's `mcp_bash` is rewritten to `mcp__hermes__Bash` outbound; the response normalizer unwraps it back to `bash` so hermes's tool dispatcher resolves the registered name without auto-repair noise
+6. **Tool pair repair**: Orphaned `tool_use` / `tool_result` blocks (left by long conversations or partial summaries) are stripped before signing — prevents HTTP 400 (upstream PR #136)
+7. **Haiku effort stripping**: `effort` parameter is removed for haiku models that reject it with HTTP 400 (upstream PR #126)
+8. **Temperature fix**: Strips non-default `temperature` on Opus 4.6 adaptive thinking, which otherwise rejects with HTTP 400
+9. **Account metadata**: Maps `~/.claude.json::oauthAccount.accountUuid` to `metadata.user_id` (Anthropic rejected the older `account_uuid` key with HTTP 400 on 2026-04-29)
 
 Installed through a `sitecustomize.py` MetaPathFinder hook, so it runs at interpreter startup with no source modifications.
 
