@@ -99,8 +99,13 @@ chmod 644 "$PATCHES_DIR/anthropic_billing_bypass.py"
 printf "${GREEN}[✓] Copied patch to %s/${RESET}\n" "$PATCHES_DIR"
 
 # ── Install sitecustomize hook ──────────────────────────────────────
+# If antigravity's sitecustomize is already present, don't touch it —
+# it already includes the Claude Code hook.
+ANTIGRAVITY_MARKER="# hermes-antigravity managed"
 if [ ! -f "$SITECUSTOMIZE" ]; then
     cp "$SCRIPT_DIR/sitecustomize_hook.py" "$SITECUSTOMIZE"
+elif grep -q "$ANTIGRAVITY_MARKER" "$SITECUSTOMIZE" 2>/dev/null; then
+    printf "${GREEN}[✓] Antigravity sitecustomize already present (includes Claude hook)${RESET}\n"
 elif grep -q "$MARKER" "$SITECUSTOMIZE"; then
     cp "$SCRIPT_DIR/sitecustomize_hook.py" "$SITECUSTOMIZE"
 else
