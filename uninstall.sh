@@ -81,6 +81,14 @@ if [ "$PURGE" -eq 1 ]; then
     removed_patch=1
   fi
 
+  # install.sh imports the patch during verification, which can leave a
+  # Python bytecode cache behind.  Purge only this plugin's cache files so
+  # other providers sharing ~/.hermes/patches are not disturbed.
+  if [ -d "$PATCH_DIR/__pycache__" ]; then
+    rm -f "$PATCH_DIR"/__pycache__/anthropic_billing_bypass.*.pyc
+    rmdir "$PATCH_DIR/__pycache__" 2>/dev/null || true
+  fi
+
   if [ -d "$PATCH_DIR" ]; then
     empty=1
     for entry in "$PATCH_DIR"/* "$PATCH_DIR"/.[!.]* "$PATCH_DIR"/..?*; do
