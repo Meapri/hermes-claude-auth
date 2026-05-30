@@ -15,12 +15,11 @@ On 2026-04-04, Anthropic added server-side validation that rejects OAuth request
 
 ## Install
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kristianvast/hermes-claude-auth/main/install-remote.sh | bash
-```
+# Remote install (one-liner)
+curl -fsSL https://raw.githubusercontent.com/Meapri/hermes-claude-auth/main/install-remote.sh | bash
 
-Or clone manually:
-```bash
-git clone https://github.com/kristianvast/hermes-claude-auth.git
+# Or clone manually
+git clone https://github.com/Meapri/hermes-claude-auth.git
 cd hermes-claude-auth
 ./install.sh
 ```
@@ -55,6 +54,40 @@ Installed through a `sitecustomize.py` MetaPathFinder hook, so it runs at interp
 | `~/.hermes/patches/anthropic_billing_bypass.py` | Created |
 | `<venv>/lib/pythonX.Y/site-packages/sitecustomize.py` | Created or replaced |
 | hermes-agent source files | NOT modified |
+
+## After Hermes Update
+
+When you run `hermes update` (which does `git pull` + `pip install`), the
+`sitecustomize.py` inside the venv may be overwritten. The patch file survives.
+
+**Check what's broken:**
+```bash
+cd hermes-claude-auth
+./install.sh --check
+```
+
+**Recover (only restores sitecustomize.py + patch):**
+```bash
+cd hermes-claude-auth
+git pull && ./install.sh --post-update
+```
+
+**Full recovery:**
+```bash
+cd hermes-claude-auth
+git pull && ./install.sh
+```
+
+### What survives `hermes update`
+
+| File | Location | Survives? |
+|------|----------|:---:|
+| `anthropic_billing_bypass.py` | `~/.hermes/patches/` | ✅ Outside repo |
+| **`sitecustomize.py`** | venv `site-packages/` | ❌ Overwritten |
+| Claude credentials | `~/.claude/` | ✅ Managed by Claude CLI |
+| Auth token | `~/.hermes/auth.json` | ✅ Outside repo |
+
+Only `sitecustomize.py` needs recovery. `--post-update` does exactly that.
 
 ## Compatibility
 - Tested with hermes-agent on Python 3.11+

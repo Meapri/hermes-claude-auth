@@ -41,11 +41,10 @@ def _install_hook() -> None:
     class _ClaudeCodeBypassFinder(MetaPathFinder):
         _patched = False
 
-        def find_spec(self, fullname, path=None, target=None):  # type: ignore[override]
+        def find_spec(self, fullname, path=None, target=None):
             if fullname != _TARGET_MODULE or self._patched:
                 return None
 
-            # Temporarily remove ourselves to avoid recursion during find_spec.
             if self in sys.meta_path:
                 sys.meta_path.remove(self)
             try:
@@ -63,13 +62,18 @@ def _install_hook() -> None:
 
             finder = self
 
-            def patched_exec(module):  # type: ignore[no-untyped-def]
+            def patched_exec(module):
                 original_exec(module)
                 finder._patched = True
                 try:
                     import anthropic_billing_bypass
 
-                    anthropic_billing_bypass.apply_patches(module)
+                    ok = anthropic_billing_bypass.apply_patches(module)
+                    if not ok:
+                        sys.stderr.write(
+                            "[hermes-claude-auth] bypass declined "
+                            "(API incompatibility detected)\n"
+                        )
                 except Exception as exc:
                     import traceback
 
@@ -79,7 +83,7 @@ def _install_hook() -> None:
                     )
                     traceback.print_exc(file=sys.stderr)
 
-            spec.loader.exec_module = patched_exec  # type: ignore[attr-defined]
+            spec.loader.exec_module = patched_exec
             return spec
 
     sys.meta_path.insert(0, _ClaudeCodeBypassFinder())
