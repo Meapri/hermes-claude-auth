@@ -4,9 +4,12 @@ sitecustomize hook — Claude Code OAuth bypass for hermes-agent.
 
 This file is installed into the hermes-agent venv's site-packages as
 ``sitecustomize.py`` by ``install.sh``.  It runs once at Python interpreter
-startup (before any user code) and hooks the import of
-``agent.anthropic_adapter`` so that the billing bypass patch is applied
-immediately after the module loads.
+startup (before any user code) and hooks both:
+
+- ``agent.error_classifier`` so Anthropic thinking-replay 400s are classified
+  as recoverable before ``agent.conversation_loop`` binds ``classify_api_error``.
+- ``agent.anthropic_adapter`` so OAuth billing/tool-name bypass behavior is
+  applied immediately after the adapter loads.
 
 To disable: run ``uninstall.sh`` or delete the sitecustomize.py from the
 venv's site-packages and restart hermes-gateway.
@@ -25,13 +28,13 @@ _PATCHES_DIR = os.environ.get(
     "HERMES_PATCHES_DIR",
     os.path.expanduser("~/.hermes/patches"),
 )
-_TARGET_MODULE = "agent.anthropic_adapter"
+_TARGET_MODULE = "agent.anthropic_adapter"  # Back-compat for tests/older callers.
 
 if os.path.isdir(_PATCHES_DIR) and _PATCHES_DIR not in sys.path:
     sys.path.insert(0, _PATCHES_DIR)
 
 
-def _install_hook() -> None:
+def _make_import_hook(target_module, patcher_fn, label):
     try:
         from importlib.abc import MetaPathFinder
         from importlib.util import find_spec
@@ -42,7 +45,7 @@ def _install_hook() -> None:
         _patched = False
 
         def find_spec(self, fullname, path=None, target=None):
-            if fullname != _TARGET_MODULE or self._patched:
+            if fullname != target_module or self._patched:
                 return None
 
             if self in sys.meta_path:
@@ -66,20 +69,12 @@ def _install_hook() -> None:
                 original_exec(module)
                 finder._patched = True
                 try:
-                    import anthropic_billing_bypass
-
-                    ok = anthropic_billing_bypass.apply_patches(module)
-                    if not ok:
-                        sys.stderr.write(
-                            "[hermes-claude-auth] bypass declined "
-                            "(API incompatibility detected)\n"
-                        )
+                    patcher_fn(module)
                 except Exception as exc:
                     import traceback
 
                     sys.stderr.write(
-                        f"[hermes-claude-auth] bypass failed: "
-                        f"{type(exc).__name__}: {exc}\n"
+                        f"[{label}] bypass failed: {type(exc).__name__}: {exc}\n"
                     )
                     traceback.print_exc(file=sys.stderr)
 
@@ -89,7 +84,38 @@ def _install_hook() -> None:
     sys.meta_path.insert(0, _ClaudeCodeBypassFinder())
 
 
-try:
+def _patch_anthropic_adapter(module):
+    import anthropic_billing_bypass
+
+    ok = anthropic_billing_bypass.apply_patches(module)
+    if not ok:
+        sys.stderr.write(
+            "[hermes-claude-auth] bypass declined "
+            "(API incompatibility detected)\n"
+        )
+
+
+def _patch_error_classifier(_module):
+    import anthropic_billing_bypass
+
+    anthropic_billing_bypass._install_thinking_replay_classifier_patch()
+
+
+def _install_hook() -> None:
+    """Back-compatible helper: install only the historical adapter hook."""
+    _make_import_hook(_TARGET_MODULE, _patch_anthropic_adapter, "hermes-claude-auth")
+
+
+def _install_all_hooks() -> None:
+    _make_import_hook(
+        "agent.error_classifier",
+        _patch_error_classifier,
+        "hermes-claude-auth-errors",
+    )
     _install_hook()
+
+
+try:
+    _install_all_hooks()
 except Exception as _exc:
     sys.stderr.write(f"[hermes-claude-auth] hook install failed: {_exc}\n")

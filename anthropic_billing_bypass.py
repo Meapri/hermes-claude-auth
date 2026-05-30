@@ -11,6 +11,8 @@ ports its bypass behaviors to Python.
 
 Version history
 ---------------
+- 1.5.1 (2026-05-30): Classify Anthropic's newer "latest assistant thinking
+  blocks cannot be modified" 400 as recoverable thinking replay failure.
 - 1.5.0 (2026-05-06): Fix literal ``\\n`` escapes in system-reminder text,
   lowercase Stainless headers (matches upstream JS SDK), restore Opus 4.6
   temperature stripping, port ``repair_tool_pairs`` (upstream PR #136) and
@@ -37,7 +39,7 @@ References
 
 from __future__ import annotations
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 import hashlib
 import inspect
@@ -190,6 +192,81 @@ def _rewrite_tool_names(api_kwargs: Dict[str, Any]) -> None:
                     # message was modified.  Re-wrap only the tool_use name;
                     # never touch thinking/redacted_thinking blocks themselves.
                     block["name"] = _wrap_tool_name(block.get("name") or "")
+
+
+def _install_thinking_replay_classifier_patch() -> bool:
+    """Classify Anthropic's newer thinking-replay 400 as recoverable.
+
+    Core Hermes already retries ``FailoverReason.thinking_signature`` by
+    stripping ``reasoning_details`` and replaying visible/tool history.  Newer
+    Anthropic returns a different message when the latest assistant's signed
+    thinking blocks are not byte-identical: "cannot be modified".  Older Hermes
+    versions classify that as non-retryable ``format_error`` because the string
+    contains ``invalid_request_error``.  Patch the classifier early, and also
+    refresh ``agent.conversation_loop.classify_api_error`` if that module was
+    imported before this hook ran.
+    """
+    try:
+        from agent import error_classifier as ec  # type: ignore[import-not-found]
+    except Exception as exc:
+        logger.debug("Cannot import agent.error_classifier for thinking patch: %s", exc)
+        return False
+
+    if getattr(ec, "_CLAUDE_CODE_THINKING_REPLAY_PATCHED", False):
+        return True
+
+    original = getattr(ec, "classify_api_error", None)
+    reason_enum = getattr(ec, "FailoverReason", None)
+    classified_cls = getattr(ec, "ClassifiedError", None)
+    if not callable(original) or reason_enum is None or classified_cls is None:
+        return False
+
+    def patched_classify_api_error(error: Exception, *args: Any, **kwargs: Any):
+        result = original(error, *args, **kwargs)
+        try:
+            status_code = getattr(result, "status_code", None)
+            message = str(error).lower()
+            body = getattr(error, "body", None)
+            if isinstance(body, dict):
+                err_obj = body.get("error")
+                if isinstance(err_obj, dict):
+                    body_msg = str(err_obj.get("message") or "").lower()
+                    if body_msg and body_msg not in message:
+                        message = f"{message} {body_msg}"
+            if (
+                status_code == 400
+                and "thinking" in message
+                and "cannot be modified" in message
+                and "latest assistant message" in message
+            ):
+                result.reason = reason_enum.thinking_signature
+                result.retryable = True
+                result.should_compress = False
+                result.should_rotate_credential = False
+                result.should_fallback = False
+        except Exception:
+            pass
+        return result
+
+    patched_classify_api_error.__name__ = getattr(original, "__name__", "classify_api_error")
+    patched_classify_api_error.__qualname__ = getattr(
+        original, "__qualname__", patched_classify_api_error.__name__
+    )
+    patched_classify_api_error.__doc__ = getattr(original, "__doc__", None)
+    patched_classify_api_error.__module__ = getattr(original, "__module__", __name__)
+    patched_classify_api_error.__wrapped__ = original  # type: ignore[attr-defined]
+
+    ec.classify_api_error = patched_classify_api_error
+    ec._CLAUDE_CODE_THINKING_REPLAY_PATCHED = True  # type: ignore[attr-defined]
+
+    loop_mod = sys.modules.get("agent.conversation_loop")
+    if loop_mod is not None:
+        try:
+            setattr(loop_mod, "classify_api_error", patched_classify_api_error)
+        except Exception:
+            pass
+    logger.debug("[anthropic_billing_bypass] Thinking replay classifier hook installed")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -980,6 +1057,7 @@ def apply_patches(anthropic_adapter_module: Any = None) -> bool:
             return False
 
     if getattr(aa, "_CLAUDE_CODE_BYPASS_APPLIED", False):
+        _install_thinking_replay_classifier_patch()
         return True
 
     # 1. Add the OAuth-only beta flags.
@@ -1044,5 +1122,6 @@ def apply_patches(anthropic_adapter_module: Any = None) -> bool:
     aa._CLAUDE_CODE_BYPASS_APPLIED = True  # type: ignore[attr-defined]
     logger.debug("[anthropic_billing_bypass] Bypass installed")
 
+    _install_thinking_replay_classifier_patch()
     _install_response_pascalcase_unhook(aa)
     return True
