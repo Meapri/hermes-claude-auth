@@ -11,6 +11,15 @@ ports its bypass behaviors to Python.
 
 Version history
 ---------------
+- 1.5.6 (2026-05-30): Fix: _strip_thinking_from_replay now handles the edge
+  case where ALL content blocks in an assistant message are thinking blocks.
+  Previously the empty-list check `if stripped:` was False for `[]`, leaving
+  the original signed thinking blocks intact and triggering the "cannot be
+  modified" 400.  Also patched Hermes core error_classifier to classify the
+  "cannot be modified" error as thinking_signature (it lacked "signature" in
+  the message text), and conversation_loop recovery to strip reasoning_content
+  alongside reasoning_details to prevent re-synthesis of unsigned thinking
+  blocks on retry.
 - 1.5.5 (2026-05-30): Fix: _strip_thinking_from_replay removes signed
   thinking/redacted_thinking blocks from ALL assistant messages before
   tool-name rewriting.  Hermes round-trips reorder thinking vs tool_use
@@ -216,8 +225,11 @@ def _strip_thinking_from_replay(messages: List[Dict[str, Any]]) -> None:
             b for b in content
             if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
         ]
-        if stripped:
-            msg["content"] = stripped
+        if len(stripped) < len(content):
+            # Some thinking blocks were removed — apply the filtered list.
+            # Use a placeholder when ALL blocks were thinking (empty content
+            # is rejected by Anthropic).
+            msg["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
 
 
 def _rewrite_tool_names(api_kwargs: Dict[str, Any]) -> None:

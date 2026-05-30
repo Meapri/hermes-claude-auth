@@ -14,6 +14,7 @@ from anthropic_billing_bypass import (
     _repair_tool_pairs,
     _split_tool_results_from_followup_user_text,
     _strip_effort,
+    _strip_thinking_from_replay,
     _unwrap_tool_name,
     _wrap_tool_name,
     apply_claude_code_bypass,
@@ -213,6 +214,9 @@ def test_apply_claude_code_bypass_rewrites_tool_names_to_hermes_namespace(
 
 
 def test_apply_claude_code_bypass_rewraps_tool_use_in_thinking_message():
+    """v1.5.6: thinking blocks are stripped from ALL assistant messages to
+    avoid Anthropic's \"cannot be modified\" 400.  tool_use names are still
+    re-wrapped to mcp__hermes__ form."""
     thinking_block = {"type": "thinking", "thinking": "private", "signature": "sig"}
     api_kwargs = {
         "system": "plain",
@@ -239,9 +243,15 @@ def test_apply_claude_code_bypass_rewraps_tool_use_in_thinking_message():
     apply_claude_code_bypass(api_kwargs, "2.1.112")
 
     assistant_content = api_kwargs["messages"][1]["content"]
-    assert assistant_content[0] is thinking_block
-    assert assistant_content[0] == thinking_block
-    assert assistant_content[1]["name"] == "mcp__hermes__Terminal"
+    # Thinking block should be stripped (v1.5.6)
+    assert not any(
+        isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+        for b in assistant_content
+    ), "thinking blocks should be stripped by _strip_thinking_from_replay"
+    # tool_use name should still be re-wrapped
+    tool_use_blocks = [b for b in assistant_content if isinstance(b, dict) and b.get("type") == "tool_use"]
+    assert len(tool_use_blocks) == 1
+    assert tool_use_blocks[0]["name"] == "mcp__hermes__Terminal"
 
 
 def test_split_tool_results_from_followup_user_text_inserts_bridge():
@@ -592,3 +602,69 @@ def test_response_unhook_is_idempotent():
 
     msg, _reason = adapter.normalize_anthropic_response(response=object())
     assert msg.tool_calls[0].function.name == "bash"
+
+
+# ── _strip_thinking_from_replay tests (v1.5.6) ──────────────────────────────
+
+
+def test_strip_thinking_from_replay_removes_all_thinking_blocks():
+    """Strip thinking/redacted_thinking from all assistant messages."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "sig1"},
+                {"type": "text", "text": "response"},
+            ],
+        },
+        {"role": "user", "content": "next"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "redacted_thinking", "data": "abc"},
+                {"type": "text", "text": "second response"},
+            ],
+        },
+    ]
+
+    _strip_thinking_from_replay(messages)
+
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for block in msg["content"]:
+                assert block["type"] not in ("thinking", "redacted_thinking")
+
+
+def test_strip_thinking_from_replay_thinking_only_message():
+    """v1.5.6 edge case: when ALL content blocks are thinking, a placeholder
+    text block must replace them to avoid empty content (Anthropic rejects it)."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "private", "signature": "sig"},
+            ],
+        },
+    ]
+
+    _strip_thinking_from_replay(messages)
+
+    assistant = messages[1]
+    assert len(assistant["content"]) == 1
+    assert assistant["content"][0]["type"] == "text"
+    assert assistant["content"][0]["text"] == "(thinking elided)"
+
+
+def test_strip_thinking_from_replay_leaves_non_assistant():
+    """User and tool messages should be untouched."""
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {"role": "tool", "content": "result"},
+    ]
+    original = copy.deepcopy(messages)
+
+    _strip_thinking_from_replay(messages)
+
+    assert messages == original
