@@ -131,6 +131,24 @@ except Exception as e:
 " 2>/dev/null || echo "FAIL (import error)")
 printf "${GREEN}[✓] Patch integrity: %s${RESET}\n" "$PATCH_CHECK"
 
+# ── Install auto-recovery git hook ──────────────────────────────────
+GIT_HOOKS_DIR="$HERMES_AGENT_DIR/.git/hooks"
+POST_MERGE_HOOK="$GIT_HOOKS_DIR/post-merge"
+ANTIGRAVITY_HOOK="$SCRIPT_DIR/../hermes-google-antigravity-plugin/scripts/post-merge-hook.sh"
+# Try sibling repo first, then look for standalone hook
+if [ -f "$ANTIGRAVITY_HOOK" ]; then
+    HOOK_SRC="$ANTIGRAVITY_HOOK"
+elif [ -f "$SCRIPT_DIR/post-merge-hook.sh" ]; then
+    HOOK_SRC="$SCRIPT_DIR/post-merge-hook.sh"
+else
+    HOOK_SRC=""
+fi
+if [ -d "$GIT_HOOKS_DIR" ] && [ -n "$HOOK_SRC" ] && [ -f "$HOOK_SRC" ]; then
+    cp "$HOOK_SRC" "$POST_MERGE_HOOK"
+    chmod +x "$POST_MERGE_HOOK"
+    printf "${GREEN}[✓] Installed auto-recovery hook (post-merge)${RESET}\n"
+fi
+
 # ── macOS Keychain mirror ───────────────────────────────────────────
 if [ "$(uname -s)" = "Darwin" ]; then
     CRED_FILE="$HOME/.claude/.credentials.json"
