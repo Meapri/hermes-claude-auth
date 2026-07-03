@@ -859,3 +859,152 @@ def test_strip_thinking_from_replay_leaves_non_assistant():
     _strip_thinking_from_replay(messages)
 
     assert messages == original
+
+
+# ---------------------------------------------------------------------------
+# Heavy end-to-end regression cases (offline mirrors of the live subscription
+# stress tests run against Hermes 0.12+ on Claude Code OAuth).  These exercise
+# the FULL apply_claude_code_bypass pipeline on the fragile multi-turn shapes
+# that historically flipped requests to the extra-usage lane or triggered the
+# "thinking ... cannot be modified" 400, and assert the invariants that keep a
+# real subscription workload on the plan lane with tool dispatch intact.
+# ---------------------------------------------------------------------------
+
+
+def _billing_header_first(api_kwargs):
+    system = api_kwargs["system"]
+    return isinstance(system, list) and system and system[0]["text"].startswith(
+        "x-anthropic-billing-header"
+    )
+
+
+def test_heavy_multiturn_signed_thinking_and_tools_survive_full_bypass():
+    """A realistic tool loop (signed thinking + tool_use + tool_result across
+    turns) must pass through the full bypass with signed thinking byte-identical,
+    native mcp__ tool names untouched, bare names namespaced, and the billing
+    header injected.  Mirrors live stress case A."""
+    api_kwargs = {
+        "system": "You are Claude Code, Anthropic's official CLI for Claude.\nBe helpful.",
+        "model": "claude-opus-4-8",
+        "tools": [{"name": "mcp__get_weather"}, {"name": "read_file"}],
+        "messages": [
+            {"role": "user", "content": "weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Check Paris.", "signature": "SIG_PARIS"},
+                    {"type": "tool_use", "id": "tu1", "name": "mcp__get_weather", "input": {"city": "Paris"}},
+                ],
+            },
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "Sunny"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Now Tokyo.", "signature": "SIG_TOKYO"},
+                    {"type": "tool_use", "id": "tu2", "name": "mcp__get_weather", "input": {"city": "Tokyo"}},
+                ],
+            },
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu2", "content": "Rain"}]},
+        ],
+    }
+
+    apply_claude_code_bypass(api_kwargs, "2.1.112")
+
+    assert _billing_header_first(api_kwargs)
+
+    # Both signed thinking blocks preserved byte-identical (signature + text).
+    thinking = [
+        b
+        for m in api_kwargs["messages"]
+        if m.get("role") == "assistant"
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") == "thinking"
+    ]
+    sigs = {b["signature"]: b["thinking"] for b in thinking}
+    assert sigs == {"SIG_PARIS": "Check Paris.", "SIG_TOKYO": "Now Tokyo."}
+
+    # Native double-underscore tool names untouched; bare name namespaced.
+    tool_names = [t["name"] for t in api_kwargs["tools"]]
+    assert "mcp__get_weather" in tool_names
+    assert "mcp__hermes__Read_file" in tool_names
+    assert "mcp__hermes___get_weather" not in tool_names  # no triple-underscore mangling
+
+    # tool_use names on the wire stay in the native mcp__ form.
+    tool_use_names = [
+        b["name"]
+        for m in api_kwargs["messages"]
+        if m.get("role") == "assistant"
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") == "tool_use"
+    ]
+    assert tool_use_names == ["mcp__get_weather", "mcp__get_weather"]
+
+
+def test_latest_assistant_signed_thinking_preserved_byte_identical_through_bypass():
+    """The exact 'cannot be modified' trigger: signed thinking in the LATEST
+    assistant message with a follow-up user turn.  The full bypass must leave
+    that block's signature AND text untouched.  Mirrors live stress case F."""
+    api_kwargs = {
+        "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "model": "claude-opus-4-8",
+        "messages": [
+            {"role": "user", "content": "what is 17*23?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "17*23=391", "signature": "SIG_MATH"},
+                    {"type": "text", "text": "391"},
+                ],
+            },
+            {"role": "user", "content": "add 100"},
+        ],
+    }
+
+    apply_claude_code_bypass(api_kwargs, "2.1.112")
+
+    latest_assistant = [m for m in api_kwargs["messages"] if m.get("role") == "assistant"][-1]
+    thinking = [b for b in latest_assistant["content"] if isinstance(b, dict) and b.get("type") == "thinking"]
+    assert len(thinking) == 1
+    assert thinking[0]["signature"] == "SIG_MATH"
+    assert thinking[0]["thinking"] == "17*23=391"
+
+
+def test_heavy_signed_thinking_with_orphaned_tool_use_preserves_assistant():
+    """A signed-thinking assistant whose tool_use is orphaned (no tool_result)
+    must NOT be mutated — the repair synthesizes a tool_result in the following
+    user turn instead, so the signed block stays intact.  Mirrors live stress
+    case B combined with thinking."""
+    api_kwargs = {
+        "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "model": "claude-opus-4-8",
+        "tools": [{"name": "mcp__get_weather"}],
+        "messages": [
+            {"role": "user", "content": "weather in Rome?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Look up Rome.", "signature": "SIG_ROME"},
+                    {"type": "tool_use", "id": "orphan", "name": "mcp__get_weather", "input": {"city": "Rome"}},
+                ],
+            },
+            {"role": "user", "content": "never mind, say DONE"},
+        ],
+    }
+
+    apply_claude_code_bypass(api_kwargs, "2.1.112")
+
+    # Assistant signed thinking untouched, and its tool_use still present.
+    assistant = [m for m in api_kwargs["messages"] if m.get("role") == "assistant"][0]
+    thinking = [b for b in assistant["content"] if isinstance(b, dict) and b.get("type") == "thinking"]
+    assert thinking and thinking[0]["signature"] == "SIG_ROME"
+    assert thinking[0]["thinking"] == "Look up Rome."
+
+    # A synthetic tool_result for the orphan was injected (not left dangling).
+    all_tool_result_ids = [
+        b.get("tool_use_id")
+        for m in api_kwargs["messages"]
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") == "tool_result"
+    ]
+    assert "orphan" in all_tool_result_ids
