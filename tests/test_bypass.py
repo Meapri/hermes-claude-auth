@@ -156,6 +156,16 @@ def test_wrap_tool_name_is_idempotent_when_already_namespaced():
     assert _wrap_tool_name("mcp__hermes__Bash") == "mcp__hermes__Bash"
 
 
+def test_wrap_tool_name_leaves_hermes_native_double_underscore_untouched():
+    """v1.5.8: Hermes 0.12+ already normalizes OAuth-wire tool names to the
+    double-underscore ``mcp__<tool>`` form and reverses them via registry
+    lookup.  Re-wrapping mangles them into ``mcp__hermes___<tool>`` (triple
+    underscore), which breaks tool dispatch.  Leave them untouched."""
+    assert _wrap_tool_name("mcp__browser_back") == "mcp__browser_back"
+    assert _wrap_tool_name("mcp__read_file") == "mcp__read_file"
+    assert _wrap_tool_name("mcp__linear_get_issue") == "mcp__linear_get_issue"
+
+
 def test_unwrap_tool_name_lowercases_first_char():
     assert _unwrap_tool_name("mcp__hermes__Bash") == "bash"
     assert _unwrap_tool_name("mcp__hermes__Background_output") == "background_output"

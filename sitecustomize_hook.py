@@ -24,10 +24,35 @@ from __future__ import annotations
 import os
 import sys
 
-_PATCHES_DIR = os.environ.get(
-    "HERMES_PATCHES_DIR",
-    os.path.expanduser("~/.hermes/patches"),
-)
+def _discover_patches_dir():
+    """Locate the ~/.hermes/patches equivalent across platforms.
+
+    Linux/macOS keep the Hermes home at ~/.hermes.  The Windows desktop build
+    puts it under %LOCALAPPDATA%\\hermes instead, so a hard-coded
+    ~/.hermes/patches misses the patch and the bypass silently never loads.
+    Check, in order: explicit override, $HERMES_HOME, the Windows LocalAppData
+    location, then the classic ~/.hermes.  Return the first that exists, else
+    the classic path (so a fresh install still has a sensible target).
+    """
+    candidates = []
+    override = os.environ.get("HERMES_PATCHES_DIR")
+    if override:
+        candidates.append(override)
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        candidates.append(os.path.join(hermes_home, "patches"))
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(os.path.join(local_appdata, "hermes", "patches"))
+    classic = os.path.expanduser("~/.hermes/patches")
+    candidates.append(classic)
+    for path in candidates:
+        if path and os.path.isdir(path):
+            return path
+    return classic
+
+
+_PATCHES_DIR = _discover_patches_dir()
 _TARGET_MODULE = "agent.anthropic_adapter"  # Back-compat for tests/older callers.
 
 if os.path.isdir(_PATCHES_DIR) and _PATCHES_DIR not in sys.path:

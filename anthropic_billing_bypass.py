@@ -11,6 +11,19 @@ ports its bypass behaviors to Python.
 
 Version history
 ---------------
+- 1.5.8 (2026-07-03): Coexist with Hermes 0.12+ native tool-name normalization.
+  Newer hermes-agent already rewrites every OAuth-wire tool name to the
+  double-underscore ``mcp__<tool>`` form itself (build_anthropic_kwargs,
+  is_oauth branch) and reverses it via registry lookup in normalize_response.
+  This patch's ``_wrap_tool_name`` was blindly re-wrapping those, producing a
+  mangled triple-underscore ``mcp__hermes___<tool>`` that broke tool dispatch.
+  ``_wrap_tool_name`` now leaves already-``mcp__`` names untouched and only
+  wraps legacy single-underscore ``mcp_<tool>`` / bare names from old Hermes.
+  Verified empirically on Hermes running Claude Code OAuth: the real agent
+  request (28 tools, ~22K-token system prompt, Opus 4.8) 400s with
+  "third-party ... extra usage" on bare Hermes, and this patch (billing header
+  + system-prompt relocation + Stainless spoof) restores plan-lane billing
+  while keeping tool names intact.
 - 1.5.7 (2026-05-30): Root cause fix: preserve original Anthropic content
   block interleaving order instead of stripping thinking blocks as a
   workaround.  Hermes core changes:
@@ -85,7 +98,7 @@ References
 
 from __future__ import annotations
 
-__version__ = "1.5.7"
+__version__ = "1.5.8"
 
 import hashlib
 import inspect
@@ -173,6 +186,18 @@ def _wrap_tool_name(name: str) -> str:
     if not isinstance(name, str) or not name:
         return name
     if name.startswith(_MCP_HERMES_NAMESPACE):
+        return name
+    # Hermes 0.12+ already normalizes every OAuth-wire tool name to the
+    # double-underscore ``mcp__<tool>`` form itself (agent.anthropic_adapter
+    # build_anthropic_kwargs, is_oauth branch), and its response normalizer
+    # reverses that via registry lookup.  Re-wrapping a name that is already
+    # ``mcp__…`` double-prefixes it into a mangled ``mcp__hermes___<tool>``
+    # (triple underscore) that breaks tool dispatch.  Leave already-normalized
+    # names untouched; only wrap the legacy single-underscore ``mcp_<tool>``
+    # and bare names that old Hermes emitted.
+    if name.startswith(_MCP_HERMES_NAMESPACE[len(_MCP_PREFIX):]):  # "_hermes__…"
+        return _MCP_PREFIX + name
+    if name.startswith("mcp__"):
         return name
     base = name[len(_MCP_PREFIX):] if name.startswith(_MCP_PREFIX) else name
     return _MCP_HERMES_NAMESPACE + _uppercase_first(base)

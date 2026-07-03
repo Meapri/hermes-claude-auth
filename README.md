@@ -29,6 +29,25 @@ What `install.sh` does:
 - Installs the import hook as `sitecustomize.py` in the hermes venv's site-packages
 - Restarts `hermes-gateway.service` if running
 
+### Windows
+
+The desktop build keeps its Hermes home at `%LOCALAPPDATA%\hermes` (not
+`~/.hermes`) and its venv python at `venv\Scripts\python.exe`, so `install.sh`
+does not apply. Use the PowerShell installer instead:
+
+```powershell
+git clone https://github.com/Meapri/hermes-claude-auth.git
+cd hermes-claude-auth
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+# verify:  powershell -ExecutionPolicy Bypass -File .\install.ps1 -Check
+```
+
+It copies the patch to `%LOCALAPPDATA%\hermes\patches\` (outside the venv, so it
+survives `hermes update`) and installs the platform-aware `sitecustomize.py`
+into the venv's `Lib\site-packages\`. The hook auto-discovers the Windows
+patches directory. After a `hermes update` that rebuilds the venv, re-run
+`install.ps1` to restore `sitecustomize.py`.
+
 ## Agent Handoff Prompt
 
 Use this prompt when another Hermes instance needs to install, repair, or audit
