@@ -169,7 +169,6 @@ printf "${GREEN}[✓] Patch integrity: %s${RESET}\n" "$PATCH_CHECK"
 GIT_HOOKS_DIR="$HERMES_AGENT_DIR/.git/hooks"
 POST_MERGE_HOOK="$GIT_HOOKS_DIR/post-merge"
 ANTIGRAVITY_HOOK="$SCRIPT_DIR/../hermes-google-antigravity-plugin/scripts/post-merge-hook.sh"
-# Try sibling repo first, then look for standalone hook
 if [ -f "$ANTIGRAVITY_HOOK" ]; then
     HOOK_SRC="$ANTIGRAVITY_HOOK"
 elif [ -f "$SCRIPT_DIR/post-merge-hook.sh" ]; then
@@ -177,7 +176,11 @@ elif [ -f "$SCRIPT_DIR/post-merge-hook.sh" ]; then
 else
     HOOK_SRC=""
 fi
-if [ -d "$GIT_HOOKS_DIR" ] && [ -n "$HOOK_SRC" ] && [ -f "$HOOK_SRC" ]; then
+# HPM owns the single recovery trigger when present; do not overwrite its
+# coordinator from a provider-specific installer.
+if [ "${HERMES_PATCH_MANAGER:-0}" = 1 ]; then
+    printf "${GREEN}[✓] HPM owns auto-recovery hook; leaving coordinator intact${RESET}\n"
+elif [ -d "$GIT_HOOKS_DIR" ] && [ -n "$HOOK_SRC" ] && [ -f "$HOOK_SRC" ]; then
     cp "$HOOK_SRC" "$POST_MERGE_HOOK"
     chmod +x "$POST_MERGE_HOOK"
     printf "${GREEN}[✓] Installed auto-recovery hook (post-merge)${RESET}\n"
